@@ -15,8 +15,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY src/ src/
 COPY models/ models/
 
-# Don't run as the admin (root) user: basic security practice
-RUN useradd --create-home appuser
+# Don't run as the admin (root) user, but let it write prediction logs
+RUN useradd --create-home appuser && mkdir -p logs && chown appuser logs
 USER appuser
 
 EXPOSE 8000

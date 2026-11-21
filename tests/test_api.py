@@ -82,3 +82,10 @@ def test_text_in_number_field_rejected():
 def app_categories():
     from src.api import CATEGORIES
     return CATEGORIES
+
+
+def test_prediction_is_logged_and_monitored():
+    client.post("/predict", json=load("legit_example"))
+    body = client.get("/monitor").json()
+    assert body["n_predictions"] >= 1
+    assert 0.0 <= body["block_rate"] <= 1.0

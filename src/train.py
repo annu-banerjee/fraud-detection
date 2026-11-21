@@ -22,7 +22,7 @@ OUT = ROOT / "models"
 
 TARGET = "isFraud"
 DROP = ["TransactionID", "TransactionDT", "day", TARGET]
-N_FEATURES = 60          # keep the API input small
+N_FEATURES = 30          # keep the API input small
 FP_COST = 20             # cost of a false alarm
 FN_FEE = 15              # extra cost on top of the amount for a missed fraud
 
@@ -37,6 +37,10 @@ PARAMS = {
     "bagging_freq": 1,
     "verbose": -1,
     "seed": 42,
+    # same data + same code = same model, every time
+    "deterministic": True,
+    "force_row_wise": True,
+    "num_threads": 4,
 }
 
 
@@ -96,6 +100,11 @@ def main():
                         stop_part["TransactionAmt"].values, t) for t in thresholds]
     threshold = float(thresholds[int(np.argmin(costs))])
 
+    # reference score distribution, so the API can tell when live scores drift
+    edges = np.unique(np.quantile(p_stop, np.linspace(0, 1, 11)))
+    edges[0], edges[-1] = 0.0, 1.0
+    ref_props = np.histogram(p_stop, edges)[0] / len(p_stop)
+
     # 4. honest evaluation on validation
     p_full = full_model.predict(valid[all_features], num_iteration=full_model.best_iteration)
     p_valid = model.predict(valid[features], num_iteration=model.best_iteration)
@@ -118,6 +127,7 @@ def main():
         "categorical": feature_cats,
         "threshold": threshold,
         "metrics": metrics,
+        "reference_scores": {"edges": edges.tolist(), "proportions": ref_props.tolist()},
     }
     (OUT / "metadata.json").write_text(json.dumps(metadata, indent=2))
 

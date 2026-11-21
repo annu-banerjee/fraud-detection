@@ -98,11 +98,61 @@ So the transactions look the same, but the link between them and fraud has shift
 - **Calibration:** the cost-optimal threshold (0.05) is well below the break-even value worked out by hand (about 0.18), which suggests the model's probabilities run low. Ranking isn't affected, but the scores shouldn't be read as literal probabilities without calibration.
 - **Labels:** Vesta propagated fraud labels to linked later transactions, so some patterns the model learns come from how the data was labelled.
 
+## Deployment: from notebook to service
+
+[![CI](https://github.com/annu-banerjee/fraud-detection/actions/workflows/ci.yml/badge.svg)](https://github.com/annu-banerjee/fraud-detection/actions)
+
+The research model uses 432 features. No real system sends 432 fields per payment, so `src/train.py` ranks features with the full model and retrains a compact one.
+
+| Model | Features | PR-AUC | Cost over 36 days |
+|---|---|---|---|
+| Full | 432 | 0.545 | ~$299k |
+| Compact | 30 | 0.499 | $357k |
+| **Compact (deployed)** | **60** | **0.533** | **$307k** |
+
+60 features keep 98% of the PR-AUC for 14% of the inputs.
+
+**What's in the service**
+
+- **FastAPI** (`src/api.py`): `/predict` returns a fraud score, a block/approve decision at the cost-optimal threshold, and the top three reasons from LightGBM's built-in SHAP values. Bad input (unknown fields, text in number fields) is rejected with a clear error. Missing values and unseen categories are allowed and counted.
+- **Tests** (`tests/`): 11 pytest checks, including regression tests on a known fraud and a known legit transaction.
+- **Docker**: Python 3.12 slim image, non-root user, health check. Gives the same score as the local model.
+- **CI** (GitHub Actions): every push runs the tests, builds the image, starts the container and sends it a real transaction.
+- **Monitoring**: every prediction is logged with a request ID and latency. `/monitor` reports block rate, p95 latency and a PSI check of live scores against the training distribution.
+
+**A bug the tests caught.** After retraining, five tests failed with 422 errors. Multithreaded LightGBM training is not deterministic by default, so a near-tie in feature importance swapped which features made the top 60, and the stored example requests no longer matched. I made training deterministic (`deterministic`, `force_row_wise`, fixed thread count) and regenerated the fixtures. Retraining now produces a byte-identical model.
+
+**What monitoring can and can't see.** I replayed real validation traffic through the API:
+
+| Replayed week | Real frauds in 500 | Caught | Block rate | Score PSI |
+|---|---|---|---|---|
+| Week 0 | 13 | 6 | 7.6% | 0.015 (stable) |
+| Week 4 | 31 | 19 | 7.7% | 0.026 (stable) |
+
+Fraud more than doubled between the two weeks, yet the block rate and score distribution barely moved, and PSI stayed "stable". Label-free monitoring only sees inputs and scores. It can't tell that the share of fraud underneath has changed. That's the same concept-drift finding as the research section, now shown in a running system. The samples are small (13 and 31 frauds), so the catch rates are noisy, but the blind spot is the point.
+
+**Run it locally**
+
+```bash
+pip install -r requirements.txt
+python src/train.py          # needs data/processed/*.parquet from the notebooks
+uvicorn src.api:app          # docs at http://127.0.0.1:8000/docs
+pytest -v
+```
+
+Or with Docker:
+
+```bash
+docker build -t fraud-api .
+docker run -d -p 8000:8000 fraud-api
+curl -X POST http://127.0.0.1:8000/predict -H "Content-Type: application/json" -d @examples/fraud_example.json
+```
+
 ## Next steps
 
 - Calibrate probabilities (isotonic regression) and use a per-transaction rule: flag when expected loss exceeds review cost
 - Retrain without `DeviceInfo` and compare
-- Serve the model through a FastAPI endpoint with Docker and basic monitoring
+- Add label-based monitoring that joins chargebacks back to logged request IDs once outcomes arrive
 
 ## Project structure
 
@@ -110,10 +160,18 @@ So the transactions look the same, but the link between them and fraud has shift
 fraud-detection/
 ├── notebooks/
 │   ├── 01_eda.ipynb
-│   └── 02_baseline.ipynb
-├── figures/        # charts used in this README
-├── results/        # saved model, threshold table, drift and weekly metrics
-├── data/           # not committed; download from Kaggle
+│   └── 02_baseline.ipynb          # baseline, LightGBM, threshold, SHAP, drift
+├── src/
+│   ├── train.py                   # reproducible training of the deployed model
+│   ├── api.py                     # FastAPI service with logging and /monitor
+│   ├── make_examples.py           # real transactions saved as test requests
+│   └── replay.py                  # sends validation traffic to the running API
+├── tests/test_api.py
+├── models/                        # deployed model + metadata
+├── examples/                      # sample requests
+├── figures/  results/
+├── Dockerfile  requirements.txt  .github/workflows/ci.yml
+├── data/                          # not committed; download from Kaggle
 └── README.md
 ```
 
