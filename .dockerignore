@@ -1,0 +1,10 @@
+data/
+.venv/
+notebooks/
+figures/
+results/
+.git/
+.pytest_cache/
+__pycache__/
+*.ipynb
+.DS_Store
